@@ -11,8 +11,6 @@
       :root {
         color-scheme: dark;
         box-sizing: border-box;
-        padding-top: env(safe-area-inset-top, 0px);
-        padding-bottom: env(safe-area-inset-bottom, 0px);
         --bg: #08050f;
         --fg: #cfc8e6;
         --btn: #241a3d;
@@ -21,6 +19,7 @@
       html,
       body {
         margin: 0;
+        overflow: hidden;
         background: var(--bg);
         color: var(--fg);
         font-family:
@@ -30,21 +29,22 @@
           sans-serif;
       }
       body {
-        min-height: 100vh;
+        box-sizing: border-box;
+        height: 100vh;
+        height: 100dvh;
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 12px;
-        padding: 12px;
+        padding: env(safe-area-inset-top, 0px) 0
+          env(safe-area-inset-bottom, 0px);
       }
       canvas {
-        width: auto;
-        height: auto;
-        max-width: 100%;
-        max-height: calc(100vh - 130px);
-        aspect-ratio: 700/800;
+        display: block;
+        flex: 1 1 0;
+        min-height: 0;
+        width: 100%;
+        object-fit: contain;
         background: var(--bg);
-        border-radius: 8px;
       }
       .bar {
         display: flex;
@@ -52,6 +52,7 @@
         flex-wrap: wrap;
         justify-content: center;
         align-items: center;
+        padding: 8px 8px 4px;
       }
       button,
       label.b {
@@ -67,10 +68,11 @@
         display: none;
       }
       #msg {
-        font-size: 14px;
+        font-size: 13px;
         text-align: center;
         max-width: 520px;
         opacity: 0.85;
+        padding: 0 12px 8px;
       }
     </style>
   </head>
@@ -87,9 +89,9 @@
       tashqariga chiqmaydi.
     </div>
     <script>
-      const W = 700,
-        H = 800,
-        cv = document.getElementById("c"),
+      let W = 700,
+        H = 800;
+      const cv = document.getElementById("c"),
         ctx = cv.getContext("2d"),
         msg = document.getElementById("msg");
       const BGC = [8, 5, 15];
@@ -299,9 +301,29 @@
         t = 0,
         fadeStatic = null,
         last = 0;
-      const img = ctx.createImageData(W, H),
-        data = img.data,
+      let img,
+        data,
+        u32,
+        FS = 26,
+        lastImg = null;
+      function fontStr() {
+        return "italic " + FS + 'px Georgia,"Times New Roman",serif';
+      }
+      function setup() {
+        const k = Math.min(
+          1,
+          Math.sqrt(1200000 / Math.max(1, cv.clientWidth * cv.clientHeight)),
+        );
+        W = Math.max(200, Math.round(cv.clientWidth * k));
+        H = Math.max(200, Math.round(cv.clientHeight * k));
+        cv.width = W;
+        cv.height = H;
+        img = ctx.createImageData(W, H);
+        data = img.data;
         u32 = new Uint32Array(data.buffer);
+        A = null;
+        fadeStatic = null;
+      }
       const BG32 = (255 << 24) | (BGC[2] << 16) | (BGC[1] << 8) | BGC[0];
       let sx = new Float32Array(TWINKLES),
         sy = new Float32Array(TWINKLES),
@@ -313,6 +335,7 @@
       }
 
       function build(source) {
+        lastImg = source;
         const s0 = Math.min(1, 1400 / Math.max(source.width, source.height));
         const wk = mkCanvas(
           Math.round(source.width * s0),
@@ -335,15 +358,18 @@
           }
         if (x1 < x0) throw new Error("Rasmda shakl topilmadi");
         const cw = x1 - x0 + 1,
-          ch = y1 - y0 + 1,
-          sc = Math.min((H * 0.83) / ch, (W * 0.9) / cw),
+          ch = y1 - y0 + 1;
+        FS = Math.round(Math.max(15, Math.min(38, W * 0.05)));
+        const textB = FS * 0.8 + FS * 3,
+          availH = H - textB - FS * 0.8,
+          sc = Math.min(availH / ch, (W * 0.96) / cw),
           bw = Math.floor(cw * sc),
           bh = Math.floor(ch * sc);
         const fc = mkCanvas(bw, bh);
         fc.getContext("2d").drawImage(wk, x0, y0, cw, ch, 0, 0, bw, bh);
         f = findFigure(grayOf(fc), bw, bh);
         const ox = Math.floor((W - bw) / 2),
-          oy = Math.floor(H * 0.15);
+          oy = Math.floor(textB + (availH - bh) / 2);
         const ixs = [],
           iys = [],
           fxs = [],
@@ -447,7 +473,7 @@
           R_END: Math.max(fmax, inkMax) + SOFT * 1.5 + 40,
         };
         // matn
-        ctx.font = 'italic 26px Georgia,"Times New Roman",serif';
+        ctx.font = fontStr();
         ctx.textBaseline = "top";
         words = [];
         const sp = ctx.measureText(" ").width;
@@ -457,7 +483,7 @@
             ws = parts.map((p) => ctx.measureText(p).width);
           let x =
             (W - (ws.reduce((a, b) => a + b, 0) + sp * (parts.length - 1))) / 2;
-          const y = H * (0.045 + 0.047 * li);
+          const y = FS * 0.8 + FS * 1.5 * li;
           parts.forEach((p, wi) => {
             const c = pal(wi / Math.max(1, parts.length - 1), [0, 0, 0]);
             words.push({
@@ -593,7 +619,7 @@
             for (let c = 0; c < 3; c++)
               data[i + c] = BGC[c] + (data[i + c] - BGC[c]) * fade;
         ctx.putImageData(img, 0, 0);
-        ctx.font = 'italic 26px Georgia,"Times New Roman",serif';
+        ctx.font = fontStr();
         ctx.textBaseline = "top";
         for (const w of words)
           if (t > w.t0) {
@@ -638,8 +664,32 @@
         e.preventDefault();
         loadFile(e.dataTransfer.files[0]);
       });
+      setup();
       ctx.fillStyle = "rgb(8,5,15)";
       ctx.fillRect(0, 0, W, H);
+      let rw = cv.clientWidth,
+        rh = cv.clientHeight,
+        rz;
+      addEventListener("resize", () => {
+        clearTimeout(rz);
+        rz = setTimeout(() => {
+          const w = cv.clientWidth,
+            h = cv.clientHeight;
+          if (Math.abs(w - rw) / rw < 0.05 && Math.abs(h - rh) / rh < 0.15)
+            return;
+          rw = w;
+          rh = h;
+          setup();
+          if (lastImg)
+            setTimeout(() => {
+              try {
+                build(lastImg);
+              } catch (e) {
+                msg.textContent = "Xato: " + e.message;
+              }
+            }, 30);
+        }, 250);
+      });
       requestAnimationFrame(frame);
       addEventListener("error", (e) => {
         msg.textContent = "Xato: " + e.message + " (qator " + e.lineno + ")";
