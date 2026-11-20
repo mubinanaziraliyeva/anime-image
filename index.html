@@ -1,0 +1,671 @@
+<!doctype html>
+<html lang="uz">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover"
+    />
+    <title>Code With Love</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        box-sizing: border-box;
+        padding-top: env(safe-area-inset-top, 0px);
+        padding-bottom: env(safe-area-inset-bottom, 0px);
+        --bg: #08050f;
+        --fg: #cfc8e6;
+        --btn: #241a3d;
+        --btn-fg: #e9e4ff;
+      }
+      html,
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--fg);
+        font-family:
+          system-ui,
+          -apple-system,
+          "Segoe UI",
+          sans-serif;
+      }
+      body {
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 12px;
+        padding: 12px;
+      }
+      canvas {
+        width: auto;
+        height: auto;
+        max-width: 100%;
+        max-height: calc(100vh - 130px);
+        aspect-ratio: 700/800;
+        background: var(--bg);
+        border-radius: 8px;
+      }
+      .bar {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: center;
+        align-items: center;
+      }
+      button,
+      label.b {
+        background: var(--btn);
+        color: var(--btn-fg);
+        border: 0;
+        border-radius: 8px;
+        padding: 10px 16px;
+        font-size: 15px;
+        cursor: pointer;
+      }
+      input {
+        display: none;
+      }
+      #msg {
+        font-size: 14px;
+        text-align: center;
+        max-width: 520px;
+        opacity: 0.85;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="c" width="700" height="800"></canvas>
+    <div class="bar">
+      <label class="b"
+        >Rasm tanlang<input id="f" type="file" accept="image/*"
+      /></label>
+      <button id="r">Qayta boshlash</button>
+    </div>
+    <div id="msg">
+      Oq fonda qora chiziqli rasm tanlang (masalan anime1.jpg). Rasm brauzerdan
+      tashqariga chiqmaydi.
+    </div>
+    <script>
+      const W = 700,
+        H = 800,
+        cv = document.getElementById("c"),
+        ctx = cv.getContext("2d"),
+        msg = document.getElementById("msg");
+      const BGC = [8, 5, 15];
+      // ---- sozlamalar ----
+      const QUOTE = "They Called It A Punishment.\nShe Called It Armor.";
+      const FOCUS_REL = [0.5, 0.24];
+      const TRACE_START = 0.2,
+        TRACE_SPREAD = 7.5,
+        SEG_LEN = 140,
+        SEG_SPEED = 60,
+        SEG_MIN_DUR = 1.5,
+        SEG_MAX_DUR = 3.0;
+      const FILL_START = 7.0,
+        FILL_END = 13.0,
+        SHIMMER_START = 13.4,
+        SHIMMER_DUR = 2.4;
+      const TEXT_START = 14.6,
+        WORD_GAP = 0.35,
+        WORD_DUR = 1.6,
+        TWINKLES = 45,
+        FADE_START = 22.0,
+        DURATION = 24.0;
+      const STOPS = [
+        [255, 215, 140],
+        [120, 230, 200],
+        [90, 175, 240],
+        [170, 130, 240],
+      ];
+      const TRACE_COL = [110, 150, 190],
+        INK_DARK = [6, 10, 24],
+        BAND_COL = [175, 170, 205],
+        SOFT = 36,
+        XW = 0.8;
+
+      let seed = 7;
+      function rnd() {
+        seed |= 0;
+        seed = (seed + 0x6d2b79f5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      }
+      const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+      const easeInOut = (x) =>
+        x < 0.5 ? 4 * x ** 3 : 1 - (-2 * x + 2) ** 3 / 2;
+      const easeSine = (x) => -(Math.cos(Math.PI * x) - 1) / 2;
+      const easeOut = (x) => 1 - (1 - x) ** 3;
+      function pal(g, o) {
+        g = clamp01(g) * 3;
+        const i = Math.min(Math.floor(g), 2),
+          f = g - i,
+          a = STOPS[i],
+          b = STOPS[i + 1];
+        o[0] = a[0] * (1 - f) + b[0] * f;
+        o[1] = a[1] * (1 - f) + b[1] * f;
+        o[2] = a[2] * (1 - f) + b[2] * f;
+        return o;
+      }
+
+      // ---- rasm -> chiziqlar va siluet ----
+      function label(m, w, h) {
+        const lab = new Int32Array(w * h),
+          sizes = [0],
+          st = [];
+        let n = 0;
+        for (let s = 0; s < w * h; s++) {
+          if (!m[s] || lab[s]) continue;
+          n++;
+          let c = 0;
+          lab[s] = n;
+          st.push(s);
+          while (st.length) {
+            const p = st.pop();
+            c++;
+            const x = p % w,
+              y = (p / w) | 0;
+            for (let dy = -1; dy <= 1; dy++) {
+              const yy = y + dy;
+              if (yy < 0 || yy >= h) continue;
+              for (let dx = -1; dx <= 1; dx++) {
+                const xx = x + dx;
+                if (xx < 0 || xx >= w) continue;
+                const q = yy * w + xx;
+                if (m[q] && !lab[q]) {
+                  lab[q] = n;
+                  st.push(q);
+                }
+              }
+            }
+          }
+          sizes.push(c);
+        }
+        return { lab, n, sizes };
+      }
+      function morph(s, w, h, r, dil) {
+        const t = new Uint8Array(w * h),
+          o = new Uint8Array(w * h);
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++) {
+            let v = dil ? 0 : 1;
+            for (let k = -r; k <= r; k++) {
+              const xx = x + k;
+              if (xx < 0 || xx >= w) continue;
+              const a = s[y * w + xx];
+              if (dil) {
+                if (a) {
+                  v = 1;
+                  break;
+                }
+              } else if (!a) {
+                v = 0;
+                break;
+              }
+            }
+            t[y * w + x] = v;
+          }
+        for (let y = 0; y < h; y++)
+          for (let x = 0; x < w; x++) {
+            let v = dil ? 0 : 1;
+            for (let k = -r; k <= r; k++) {
+              const yy = y + k;
+              if (yy < 0 || yy >= h) continue;
+              const a = t[yy * w + x];
+              if (dil) {
+                if (a) {
+                  v = 1;
+                  break;
+                }
+              } else if (!a) {
+                v = 0;
+                break;
+              }
+            }
+            o[y * w + x] = v;
+          }
+        return o;
+      }
+      function findFigure(g, w, h) {
+        const N = w * h,
+          ink = new Uint8Array(N);
+        let body = new Uint8Array(N);
+        for (let i = 0; i < N; i++) {
+          ink[i] = g[i] < 128 ? 1 : 0;
+          body[i] = g[i] < 235 ? 1 : 0;
+        }
+        body = morph(morph(body, w, h, 3, true), w, h, 3, false);
+        const { lab, n, sizes } = label(body, w, h);
+        let best = 1;
+        for (let k = 2; k <= n; k++) if (sizes[k] > sizes[best]) best = k;
+        const b2 = new Uint8Array(N);
+        if (n > 0) for (let i = 0; i < N; i++) b2[i] = lab[i] === best ? 1 : 0;
+        const out = new Uint8Array(N),
+          st = [];
+        const sd = (p) => {
+          if (!b2[p] && !out[p]) {
+            out[p] = 1;
+            st.push(p);
+          }
+        };
+        for (let x = 0; x < w; x++) {
+          sd(x);
+          sd((h - 1) * w + x);
+        }
+        for (let y = 0; y < h; y++) {
+          sd(y * w);
+          sd(y * w + w - 1);
+        }
+        while (st.length) {
+          const p = st.pop(),
+            x = p % w,
+            y = (p / w) | 0;
+          if (x > 0) sd(p - 1);
+          if (x < w - 1) sd(p + 1);
+          if (y > 0) sd(p - w);
+          if (y < h - 1) sd(p + w);
+        }
+        const sil = new Uint8Array(N);
+        for (let i = 0; i < N; i++) {
+          sil[i] = out[i] ? 0 : 1;
+          ink[i] &= sil[i];
+        }
+        return { ink, sil };
+      }
+      function grayOf(c) {
+        const w = c.width,
+          h = c.height,
+          d = c.getContext("2d").getImageData(0, 0, w, h).data,
+          g = new Uint8Array(w * h);
+        for (let i = 0; i < g.length; i++)
+          g[i] = 0.299 * d[4 * i] + 0.587 * d[4 * i + 1] + 0.114 * d[4 * i + 2];
+        return g;
+      }
+      function mkCanvas(w, h) {
+        const c = document.createElement("canvas");
+        c.width = w;
+        c.height = h;
+        const x = c.getContext("2d");
+        x.fillStyle = "#fff";
+        x.fillRect(0, 0, w, h);
+        x.imageSmoothingQuality = "high";
+        return c;
+      }
+
+      // ---- animatsiya holati ----
+      let A = null,
+        words = [],
+        t = 0,
+        fadeStatic = null,
+        last = 0;
+      const img = ctx.createImageData(W, H),
+        data = img.data,
+        u32 = new Uint32Array(data.buffer);
+      const BG32 = (255 << 24) | (BGC[2] << 16) | (BGC[1] << 8) | BGC[0];
+      let sx = new Float32Array(TWINKLES),
+        sy = new Float32Array(TWINKLES),
+        st0 = new Float32Array(TWINKLES),
+        sl = new Float32Array(TWINKLES);
+      function resetSpk() {
+        st0.fill(-99);
+        sl.fill(1);
+      }
+
+      function build(source) {
+        const s0 = Math.min(1, 1400 / Math.max(source.width, source.height));
+        const wk = mkCanvas(
+          Math.round(source.width * s0),
+          Math.round(source.height * s0),
+        );
+        wk.getContext("2d").drawImage(source, 0, 0, wk.width, wk.height);
+        let f = findFigure(grayOf(wk), wk.width, wk.height),
+          x0 = 1e9,
+          y0 = 1e9,
+          x1 = 0,
+          y1 = 0;
+        for (let i = 0; i < f.sil.length; i++)
+          if (f.sil[i]) {
+            const x = i % wk.width,
+              y = (i / wk.width) | 0;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+          }
+        if (x1 < x0) throw new Error("Rasmda shakl topilmadi");
+        const cw = x1 - x0 + 1,
+          ch = y1 - y0 + 1,
+          sc = Math.min((H * 0.83) / ch, (W * 0.9) / cw),
+          bw = Math.floor(cw * sc),
+          bh = Math.floor(ch * sc);
+        const fc = mkCanvas(bw, bh);
+        fc.getContext("2d").drawImage(wk, x0, y0, cw, ch, 0, 0, bw, bh);
+        f = findFigure(grayOf(fc), bw, bh);
+        const ox = Math.floor((W - bw) / 2),
+          oy = Math.floor(H * 0.15);
+        const ixs = [],
+          iys = [],
+          fxs = [],
+          fys = [];
+        for (let y = 0; y < bh; y++)
+          for (let x = 0; x < bw; x++) {
+            const i = y * bw + x;
+            if (f.ink[i]) {
+              ixs.push(x);
+              iys.push(y);
+            } else if (f.sil[i]) {
+              fxs.push(x);
+              fys.push(y);
+            }
+          }
+        const NI = ixs.length,
+          NF = fxs.length,
+          fx = bw * FOCUS_REL[0],
+          fy = bh * FOCUS_REL[1];
+        // chiziqlarni bo'laklarga ajratish
+        const cc = label(f.ink, bw, bh).lab,
+          CELL = Math.max(8, Math.floor(SEG_LEN * 0.7)),
+          map = new Map(),
+          segId = new Int32Array(NI);
+        let NS = 0;
+        for (let k = 0; k < NI; k++) {
+          const key =
+            cc[iys[k] * bw + ixs[k]] * 1e6 +
+            Math.floor(iys[k] / CELL) * 1000 +
+            Math.floor(ixs[k] / CELL);
+          let v = map.get(key);
+          if (v === undefined) {
+            v = NS++;
+            map.set(key, v);
+          }
+          segId[k] = v;
+        }
+        const dI = new Float32Array(NI),
+          smin = new Float32Array(NS).fill(1e9),
+          smax = new Float32Array(NS);
+        let dmax = 0;
+        for (let k = 0; k < NI; k++) {
+          const d = Math.hypot(ixs[k] - fx, iys[k] - fy);
+          dI[k] = d;
+          if (d > dmax) dmax = d;
+          const s = segId[k];
+          if (d < smin[s]) smin[s] = d;
+          if (d > smax[s]) smax[s] = d;
+        }
+        const slen = new Float32Array(NS),
+          sdur = new Float32Array(NS),
+          st = new Float32Array(NS);
+        for (let s = 0; s < NS; s++) {
+          slen[s] = Math.max(smax[s] - smin[s], 6);
+          sdur[s] = Math.min(
+            SEG_MAX_DUR,
+            Math.max(SEG_MIN_DUR, slen[s] / SEG_SPEED),
+          );
+          st[s] = TRACE_START + (smin[s] / dmax) * TRACE_SPREAD + rnd() * 0.35;
+        }
+        const tInk = new Float32Array(NI),
+          inkFd = new Float32Array(NI),
+          inkU = new Float32Array(NI),
+          inkIdx = new Int32Array(NI);
+        for (let k = 0; k < NI; k++) {
+          const s = segId[k];
+          tInk[k] = st[s] + clamp01((dI[k] - smin[s]) / slen[s]) * sdur[s];
+          inkFd[k] = Math.hypot((ixs[k] - fx) * XW, iys[k] - fy);
+          inkU[k] = ((0.6 * ixs[k]) / bw + (0.8 * iys[k]) / bh) / 1.4;
+          inkIdx[k] = (iys[k] + oy) * W + ixs[k] + ox;
+        }
+        const fillD = new Float32Array(NF),
+          fillU = new Float32Array(NF),
+          fillC = new Float32Array(NF * 3),
+          fillIdx = new Int32Array(NF),
+          tmp = [0, 0, 0];
+        let fmax = 0;
+        for (let k = 0; k < NF; k++) {
+          const d = Math.hypot((fxs[k] - fx) * XW, fys[k] - fy);
+          fillD[k] = d;
+          if (d > fmax) fmax = d;
+          fillU[k] = ((0.6 * fxs[k]) / bw + (0.8 * fys[k]) / bh) / 1.4;
+          pal((0.78 * fys[k]) / bh + (0.22 * fxs[k]) / bw, tmp);
+          fillC[3 * k] = tmp[0];
+          fillC[3 * k + 1] = tmp[1];
+          fillC[3 * k + 2] = tmp[2];
+          fillIdx[k] = (fys[k] + oy) * W + fxs[k] + ox;
+        }
+        const inkMax = inkFd.reduce((a, b) => Math.max(a, b), 0);
+        A = {
+          NI,
+          NF,
+          tInk,
+          inkFd,
+          inkU,
+          inkIdx,
+          fillD,
+          fillU,
+          fillC,
+          fillIdx,
+          R_END: Math.max(fmax, inkMax) + SOFT * 1.5 + 40,
+        };
+        // matn
+        ctx.font = 'italic 26px Georgia,"Times New Roman",serif';
+        ctx.textBaseline = "top";
+        words = [];
+        const sp = ctx.measureText(" ").width;
+        let kw = 0;
+        QUOTE.split("\n").forEach((line, li) => {
+          const parts = line.split(" "),
+            ws = parts.map((p) => ctx.measureText(p).width);
+          let x =
+            (W - (ws.reduce((a, b) => a + b, 0) + sp * (parts.length - 1))) / 2;
+          const y = H * (0.045 + 0.047 * li);
+          parts.forEach((p, wi) => {
+            const c = pal(wi / Math.max(1, parts.length - 1), [0, 0, 0]);
+            words.push({
+              p,
+              x,
+              y,
+              col: `rgb(${c.map(Math.round)})`,
+              t0: TEXT_START + kw * WORD_GAP,
+            });
+            x += ws[wi] + sp;
+            kw++;
+          });
+        });
+        restart();
+      }
+      function restart() {
+        t = 0;
+        fadeStatic = null;
+        resetSpk();
+      }
+
+      function render(t) {
+        u32.fill(BG32);
+        const prog = clamp01((t - FILL_START) / (FILL_END - FILL_START)),
+          R = prog > 0 ? A.R_END * easeInOut(prog) : -1e6;
+        const s = (t - SHIMMER_START) / SHIMMER_DUR,
+          shim = s > 0 && s < 1 ? -0.25 + 1.5 * easeSine(s) : null;
+        if (prog > 0) {
+          const gk = 0.55 * (1 - prog * 0.6),
+            { fillD, fillU, fillC, fillIdx } = A;
+          for (let k = 0; k < A.NF; k++) {
+            const d = fillD[k],
+              a = clamp01((R - d) / SOFT),
+              q = (d - R + 10) / 22,
+              glow = q > -4 && q < 4 ? Math.exp(-q * q) * gk : 0;
+            if (a <= 0.004 && glow <= 0.02) continue;
+            const gb = glow * (1 - a);
+            let r = fillC[3 * k] * a + BAND_COL[0] * gb,
+              g = fillC[3 * k + 1] * a + BAND_COL[1] * gb,
+              b = fillC[3 * k + 2] * a + BAND_COL[2] * gb;
+            if (shim !== null) {
+              const hl =
+                Math.exp(-(((fillU[k] - shim) / 0.09) ** 2)) * 0.3 * 255;
+              r += hl;
+              g += hl;
+              b += hl;
+            }
+            const p = fillIdx[k] * 4;
+            data[p] = r;
+            data[p + 1] = g;
+            data[p + 2] = b;
+          }
+        }
+        const { tInk, inkFd, inkU, inkIdx } = A;
+        for (let k = 0; k < A.NI; k++) {
+          if (tInk[k] > t) continue;
+          const head = clamp01(1 - (t - tInk[k]) / 0.35);
+          let r = TRACE_COL[0] + (255 - TRACE_COL[0]) * head,
+            g = TRACE_COL[1] + (255 - TRACE_COL[1]) * head,
+            b = TRACE_COL[2] + (255 - TRACE_COL[2]) * head;
+          if (prog > 0) {
+            const ca = clamp01((R - inkFd[k]) / SOFT);
+            r = r * (1 - ca) + INK_DARK[0] * ca;
+            g = g * (1 - ca) + INK_DARK[1] * ca;
+            b = b * (1 - ca) + INK_DARK[2] * ca;
+          }
+          if (shim !== null) {
+            const hl = Math.exp(-(((inkU[k] - shim) / 0.09) ** 2)) * 0.35 * 255;
+            r += hl;
+            g += hl;
+            b += hl;
+          }
+          const p = inkIdx[k] * 4;
+          data[p] = r;
+          data[p + 1] = g;
+          data[p + 2] = b;
+        }
+      }
+      function sparkles(t) {
+        for (let i = 0; i < TWINKLES; i++)
+          if (t > st0[i] + sl[i]) {
+            for (let n = 0; n < 40; n++) {
+              const j = (rnd() * A.NI) | 0;
+              if (A.tInk[j] < t) {
+                const p = A.inkIdx[j];
+                sx[i] = p % W;
+                sy[i] = (p / W) | 0;
+                st0[i] = t;
+                sl[i] = 0.5 + rnd() * 0.7;
+                break;
+              }
+            }
+          }
+        for (let i = 0; i < TWINKLES; i++) {
+          const age = t - st0[i];
+          if (age < 0 || age > sl[i]) continue;
+          const b = Math.sin((Math.PI * age) / sl[i]) ** 2;
+          for (const [dx, dy, k] of [
+            [0, 0, 1],
+            [1, 0, 0.55],
+            [-1, 0, 0.55],
+            [0, 1, 0.55],
+            [0, -1, 0.55],
+          ]) {
+            const x = sx[i] + dx,
+              y = sy[i] + dy;
+            if (x >= 0 && x < W && y >= 0 && y < H) {
+              const p = (y * W + x) * 4,
+                m = b * k;
+              for (let c = 0; c < 3; c++)
+                data[p + c] = 255 * m + data[p + c] * (1 - m);
+            }
+          }
+        }
+      }
+      function frame(now) {
+        requestAnimationFrame(frame);
+        const dt = Math.min(0.05, (now - last) / 1000 || 0);
+        last = now;
+        if (!A) return;
+        t += dt;
+        if (t >= DURATION) restart();
+        const fade = 1 - clamp01((t - FADE_START) / (DURATION - FADE_START));
+        if (fadeStatic && fade === 1) data.set(fadeStatic);
+        else {
+          render(t);
+          if (t > SHIMMER_START + SHIMMER_DUR && fade === 1)
+            fadeStatic = new Uint8ClampedArray(data);
+        }
+        if (t < FILL_END) sparkles(t);
+        if (fade < 1)
+          for (let i = 0; i < data.length; i += 4)
+            for (let c = 0; c < 3; c++)
+              data[i + c] = BGC[c] + (data[i + c] - BGC[c]) * fade;
+        ctx.putImageData(img, 0, 0);
+        ctx.font = 'italic 26px Georgia,"Times New Roman",serif';
+        ctx.textBaseline = "top";
+        for (const w of words)
+          if (t > w.t0) {
+            const al = easeOut(clamp01((t - w.t0) / WORD_DUR));
+            ctx.globalAlpha = al * fade;
+            ctx.fillStyle = w.col;
+            ctx.fillText(w.p, w.x, w.y + (1 - al) * 10);
+          }
+        ctx.globalAlpha = 1;
+      }
+      function loadFile(file) {
+        if (!file) return;
+        msg.textContent = "Qayta ishlanmoqda…";
+        const im = new Image();
+        im.onload = () => {
+          setTimeout(() => {
+            try {
+              build(im);
+              msg.textContent =
+                "Tayyor. Qayta boshlash uchun tugma yoki R ni bosing.";
+            } catch (e) {
+              msg.textContent = "Xato: " + e.message;
+            }
+          }, 30);
+        };
+        im.onerror = () => {
+          msg.textContent = "Rasmni o‘qib bo‘lmadi";
+        };
+        im.src = URL.createObjectURL(file);
+      }
+      document
+        .getElementById("f")
+        .addEventListener("change", (e) => loadFile(e.target.files[0]));
+      document.getElementById("r").addEventListener("click", () => {
+        if (A) restart();
+      });
+      addEventListener("keydown", (e) => {
+        if ((e.key === "r" || e.key === "R") && A) restart();
+      });
+      cv.addEventListener("dragover", (e) => e.preventDefault());
+      cv.addEventListener("drop", (e) => {
+        e.preventDefault();
+        loadFile(e.dataTransfer.files[0]);
+      });
+      ctx.fillStyle = "rgb(8,5,15)";
+      ctx.fillRect(0, 0, W, H);
+      requestAnimationFrame(frame);
+      addEventListener("error", (e) => {
+        msg.textContent = "Xato: " + e.message + " (qator " + e.lineno + ")";
+      });
+      (function () {
+        const im = new Image();
+        msg.textContent = "anime1.jpg yuklanmoqda…";
+        im.onload = () =>
+          setTimeout(() => {
+            try {
+              build(im);
+              msg.textContent =
+                "Tayyor. Qayta boshlash uchun tugma yoki R ni bosing.";
+            } catch (e) {
+              msg.textContent =
+                "Avtomatik yuklanmadi (" +
+                e.message +
+                "). Rasmni qo‘lda tanlang.";
+            }
+          }, 30);
+        im.onerror = () => {
+          msg.textContent =
+            "anime1.jpg topilmadi. “Rasm tanlang” tugmasi bilan tanlang.";
+        };
+        im.src = "anime1.jpg";
+      })();
+    </script>
+  </body>
+</html>
